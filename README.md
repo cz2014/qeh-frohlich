@@ -140,6 +140,19 @@ specification:
 layers = ['Material+froh'] + 5 * ['BN+froh']
 ```
 
+## Disclaimer
+
+This package is developed and maintained by
+[cz2014](https://github.com/cz2014). Code refactoring and documentation
+were assisted by Claude (Anthropic). All physics implementations --
+Frohlich coupling, dielectric screening, and mobility calculations --
+are the responsibility of the author.
+
+If you encounter issues with physical accuracy or have questions about
+the methodology, please open an
+[issue](https://github.com/cz2014/qeh-frohlich/issues) or contact the
+author.
+
 ## License
 
 GPLv3 (inherits from QEH model).
