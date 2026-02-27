@@ -1,23 +1,7 @@
-"""
-Material building blocks for polarizability calculations.
+"""Material building blocks for polarizability calculations.
 
 This module constructs polarizability building blocks for different materials, combining
-both phononic and electronic contributions to the dielectric response. Building blocks
-are used by qeh.py to assemble heterostructure dielectric functions.
-
-Key functions:
-- phononbuildingblock(): Creates phonon building blocks from atomic data
-- dopedsemiconductor(): Adds free carrier (electronic) polarizability
-  - Implements Lindhard function (chi0) for 2D electron gas
-  - Supports anisotropic effective masses and quasi-2D screening
-  - Uses relaxation time approximation for damping
-- GrapheneBB(): Special treatment for graphene's Dirac cone band structure
-- phonon_polarizability(): Adds lattice polarizability from phonon modes
-  - Computes phonon eigenfrequencies and eigenmodes
-  - Calculates Born charge contribution to polarizability tensor
-
-Building blocks contain q-resolved polarizabilities chi(q,w) used to construct
-the heterostructure response functions.
+both phononic and electronic contributions to the dielectric response.
 """
 
 import numpy as np
@@ -27,7 +11,6 @@ from ase.units import Bohr, Hartree
 
 
 def phononbuildingblock(atoms, Z_avv, freqs, modes):
-    # Simple function for calculating phonon building block
     me = 1822.888
     m_a = atoms.get_masses() * me
 
@@ -41,7 +24,6 @@ def phononbuildingblock(atoms, Z_avv, freqs, modes):
 
 
 def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction='x', thickness=6.):
-    # Chi0 for zero temperature
     def chi0T0(q_qwm, w_qwm, me, mup_qwm):
         kf = np.sqrt(2 * me * mup_qwm)
         N = kf**2 / (2 * np.pi)
@@ -49,22 +31,18 @@ def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction
         z = q_qwm / (2 * kf)
         u = w_qwm / (q_qwm * vf)
         G = N / (me * z * (vf**2))
-        
-        # Condition 1
+
         mask1 = (np.absolute(z - u.real) >= 1)
         chi0T0_qwm = (mask1 * (-(z - u.real) / np.absolute(z - u.real)) *
                       csqrt((z - u)**2 - 1))
-        
-        # Condition 2
+
         mask2 = (np.absolute(z + u.real) >= 1)
         chi0T0_qwm -= (mask2 * ((z + u.real) / np.absolute(z + u.real)) *
                        csqrt((z + u)**2 - 1))
-        
-        # Condition 3
+
         mask3 = (np.absolute(z - u.real) < 1)
         chi0T0_qwm += 1j * mask3 * csqrt(1 - (z - u)**2)
 
-        # Condition 4
         mask4 = (np.absolute(z + u.real) < 1)
         chi0T0_qwm -= 1j * mask4 * csqrt(1 - (z + u)**2)
 
@@ -72,13 +50,11 @@ def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction
         chi0T0_qwm *= G
         return -chi0T0_qwm
 
-    # Sum Argument
     def arg(q, w, me, T, mu, mup):
         argument = (chi0T0(q, w, me, mup) /
                     (4 * T * (np.cosh((mu - mup) / (2 * T)))**2))
         return argument
 
-    # Polarizability
     def P(q_q, w_w, me, T, mu, mupmax, N):
         mup_m = np.linspace(10**(-5), mupmax, N)
         q_qwm = q_q[:, None, None]
@@ -86,14 +62,13 @@ def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction
         mup_qwm = mup_m[None, None, :]
         return np.trapz(arg(q_qwm, w_qwm, me, T, mu, mup_qwm), mup_qwm, axis=2)
 
-    # Polarizability in the relaxation time approximation
     def Pgamma(qgrid_q, w_w, direction, me=None, efermi=None, T=0.0,
                mupmax=None, N=1000, gamma=1e-4):
         assert efermi is not None, print('You have to set a fermi energy!')
         assert me is not None, \
             print('You have to set an effective electron mass!')
 
-        if isinstance(me, list) and len(me) > 1: # Anisotropic 
+        if isinstance(me, list) and len(me) > 1:
             if direction == 'x':
                 theta = 0
             elif direction == 'y':
@@ -116,7 +91,6 @@ def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction
         iw_w = w_w + 1j * gamma
 
         if T / efermi > 1e-7:
-            # Temperature dependent chemical potential
             mu = T * np.log(np.exp(efermi / T) - 1)
             if mupmax is None:
                 mupmax = 20 * T + mu * (mu > 0)
@@ -128,27 +102,23 @@ def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction
             P0 = chi0T0(q_q[:, None], np.array([0j])[None, :], me, mu)
             P1 = chi0T0(q_q[:, None], iw_w[None, :], me, mu)
 
-        ## -cz here we test no-damping case
         if gamma < 0.0:
             return P0
         else:
             return ((1 + a) * P1 / (1 + a * P1 / P0))
 
-    # Reading old file
     chiM_qw = block['chiM_qw']
     qgrid_q = block['q_abs']
     omega_w = block['omega_w']
 
-    # V_q = 2 * np.pi / qgrid_q
-    ## q2d kernal:
-    _th = thickness / Bohr 
+    _th = thickness / Bohr
     _qdp2 = qgrid_q*_th/2.0
-    V_q = 2*np.pi/qgrid_q/_qdp2 * (1. - 
+    V_q = 2*np.pi/qgrid_q/_qdp2 * (1. -
         1./_qdp2*np.exp(-_qdp2)*np.sinh(_qdp2))
     chi0Mnew_qw = Pgamma(qgrid_q, omega_w, me=effectivemass,
-                         efermi=doping, T=temperature, 
+                         efermi=doping, T=temperature,
                          gamma=eta, direction=direction)
-    chi0Mnew_qw += chiM_qw / (1 + V_q[:, None] * chiM_qw) 
+    chi0Mnew_qw += chiM_qw / (1 + V_q[:, None] * chiM_qw)
     dopedchiM_qw = chi0Mnew_qw / (1 - chi0Mnew_qw * V_q[:, None])
 
     data = {'isotropic_q': True,
@@ -170,7 +140,6 @@ def GrapheneBB(block, doping, eta):
     kf = Ef / vf
     tau = 1 / (eta / Hartree)
 
-    # Auxiliary functions
     def F(x):
         return x * ((x**2 - 1)**0.5) - np.arccosh(x)
 
@@ -179,7 +148,6 @@ def GrapheneBB(block, doping, eta):
 
     prefactor = vf**(-2)
 
-    # Real part of the Polarizability
     def P(q_q, w_w):
         q_qw = q_q[:, None]
         w_qw = w_w[None, :]
@@ -197,33 +165,27 @@ def GrapheneBB(block, doping, eta):
         Pol_qw = np.zeros((len(q_q), len(w_w)), complex)
         Pol_qw[:, :] = a
 
-        # Region I
         mask1 = (np.real(w_qw) >= vf * q_qw) * \
                 (vf * q_qw + np.real(w_qw) <= 2 * vf * kf)
         Pol_qw += mask1 * b * (F1 - F3)
 
-        # Region II
         mask2 = (np.real(w_qw) >= vf * q_qw) * \
                 (vf * q_qw + np.real(w_qw) >= 2 * vf * kf) * \
                 (np.real(w_qw) - vf * q_qw <= 2 * vf * kf)
         Pol_qw += mask2 * b * (F1 + 1j * C2)
 
-        # Region III
         mask3 = np.real(w_qw) - vf * q_qw >= 2 * vf * kf
         Pol_qw += mask3 * b * (F1 - F2 - 1j) * np.pi
 
-        # Region IV
         mask4 = (vf * q_qw >= np.real(w_qw)) * \
                 (vf * q_qw + np.real(w_qw) <= 2 * vf * kf)
         Pol_qw += mask4 * 1j * b1 * (F3 - F1)
 
-        # Region V
         mask5 = (vf * q_qw >= np.real(w_qw)) * \
                 (vf * q_qw + np.real(w_qw) >= 2 * vf * kf) * \
                 (vf * q_qw - 2 * vf * kf <= np.real(w_qw))
         Pol_qw += mask5 * b1 * (C2 - 1j * F1)
 
-        # Region VI
         mask6 = vf * q_qw - 2 * vf * kf >= np.real(w_qw)
         Pol_qw += mask6 * b1 * (C1 + C2)
 
@@ -233,7 +195,6 @@ def GrapheneBB(block, doping, eta):
                            1)
         return Pol_qw
 
-    # Relaxation time approximation for the Polarizability
     def Pgamma(q_q, w_w):
         a = 1j * w_w * tau
         iw_w = w_w + 1j / tau
@@ -249,14 +210,10 @@ def GrapheneBB(block, doping, eta):
     chi0M_qw = np.zeros([nq, nw], dtype=complex)
     chiM_qw = np.zeros([nq, nw], dtype=complex)
 
-    # for iq, q in enumerate(q_q):
-    #     print(iq, len(q_q))
-    #     for iw, w in enumerate(omega_w):
     V_q = 2 * np.pi / q_q
     chi0M_qw = Pgamma(q_q, omega_w) + (-1.3 / Bohr) * q_q[:, None]**2
     chiM_qw = chi0M_qw / (1 - chi0M_qw * V_q[:, None])
 
-    # Renormalize monopole density
     drhoM_qz = block['drhoM_qz']
 
     data = {'isotropic_q': True,
@@ -272,7 +229,6 @@ def GrapheneBB(block, doping, eta):
 
 
 def get_phonon_pol(omega_w, Z_avv, freqs, modes, m_a, cell_cv, eta=0.1e-3):
-    # Get phonons at q=0
     Z_vx = Z_avv.swapaxes(0, 1).reshape((3, -1))
     f2_w, D_xw = freqs**2, modes
 
@@ -304,26 +260,23 @@ def phonon_polarizability(bb, Z_avv, m_a, C_NN, cell_cv,
         id = int(key.split('_')[-1])
         m_a[id] = value
 
-    # Calculate eigenfrequencies
     Minv_NN = np.diag(np.repeat(1 / m_a, 3)**0.5)
     D_NN = np.dot(Minv_NN, np.dot(C_NN, Minv_NN))
     freq2_w, D_xw = np.linalg.eigh(D_NN, UPLO='U')
     s = units._hbar * 1e10 / np.sqrt(units._e * units._amu)
     freq_w = np.sqrt(freq2_w.astype(complex)) * s
 
-    # Make new bb
     bb = dict(bb)
     chiM_qw = bb['chiM_qw']
     chiD_qw = bb['chiD_qw']
     q_abs = bb['q_abs']
     omega_w = bb['omega_w']
 
-    # Get phonons at q=0
     Z_vx = Z_avv.swapaxes(0, 1).reshape((3, -1))
     f2_w = (freq_w / Hartree)**2
 
     alpha_wvv = np.zeros((len(omega_w), 3, 3), dtype=complex)
-    m_x = np.repeat(m_a * amuoverme, 3)**0.5 
+    m_x = np.repeat(m_a * amuoverme, 3)**0.5
     gamma = gamma / Hartree
     for f2, D_x in zip(f2_w, D_xw.T):
         if f2 < (1e-3 / Hartree)**2:
@@ -339,9 +292,6 @@ def phonon_polarizability(bb, Z_avv, m_a, C_NN, cell_cv,
     L = np.abs(cell_cv[2, 2] / Bohr)
     alpha_wvv *= 1 / vol * L
 
-    ### -cz ideal 2D 
-    # Vm_qw = 2 * np.pi / q_abs[:, None]
-    ### quasi-2D
     _th = thickness / Bohr
     _qdp2 = q_abs[:, None]*_th/2.0
     Vm_qw = 2*np.pi/q_abs[:, None]/_qdp2 * (1. -
@@ -349,7 +299,6 @@ def phonon_polarizability(bb, Z_avv, m_a, C_NN, cell_cv,
     Vd_qw = 2 * np.pi
     newbb = dict(bb)
 
-    # Store electronic-only chi before adding phonon contributions
     chiM_el_qw = chiM_qw.copy()
     chiD_el_qw = chiD_qw.copy()
 
@@ -365,8 +314,8 @@ def phonon_polarizability(bb, Z_avv, m_a, C_NN, cell_cv,
 
     newbb['chiM_qw'] = chiMnew_qw
     newbb['chiD_qw'] = chiDnew_qw
-    newbb['chiM_el_qw'] = chiM_el_qw  # Electronic-only (before phonon addition)
-    newbb['chiD_el_qw'] = chiD_el_qw  # Electronic-only (before phonon addition)
+    newbb['chiM_el_qw'] = chiM_el_qw
+    newbb['chiD_el_qw'] = chiD_el_qw
     newbb['omega_w'] = omega_w
     newbb['q_abs'] = q_abs
     newbb['drhoM_qz'] = rhoMnew_qz

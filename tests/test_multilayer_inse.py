@@ -1,10 +1,8 @@
-"""
-Test for single-layer InSe mobility calculation.
+"""Regression test for qeh-frohlich package.
 
-Validates that the restructured package produces the same mobility
-(124.789 cm^2/Vs) as the original cz_qeh3 code.
+Validates single-layer InSe mobility = 124.789 cm^2/Vs.
+This exercises the full pipeline: heterostructure -> Frohlich -> scattering -> mobility.
 """
-
 import os
 import glob
 import numpy as np
@@ -13,15 +11,13 @@ from contextlib import contextmanager
 from qeh_frohlich.qeh import make_heterostructure, Hartree, Bohr
 from qeh_frohlich import frohlich as fh
 from qeh_frohlich.scat_pp import scat
-from qeh_frohlich import unit2
 
-# InSe material parameters
 INSE_PARAMS = {
-    'a': 7.7271278,           # Lattice constant in Bohr
-    'effmass': 0.192,         # Electron effective mass in m_e
-    'fermi': -0.1,            # Fermi level in eV
-    'eintn': 1000,            # Energy integration points for mobility
-    'sintn': 300,             # Scattering integration points
+    'a': 7.7271278,
+    'effmass': 0.192,
+    'fermi': -0.1,
+    'eintn': 1000,
+    'sintn': 300,
 }
 
 GRID_PARAMS = {
@@ -30,7 +26,7 @@ GRID_PARAMS = {
     'thicknesses': None,
 }
 
-EXPECTED_MOBILITY = 124.789119  # cm^2/Vs baseline from cz_qeh3
+EXPECTED_MOBILITY = 124.789119
 
 
 @contextmanager
@@ -47,7 +43,7 @@ def cleanup_npz():
 def test_single_inse_mobility():
     """Single InSe layer mobility must match baseline value."""
     with cleanup_npz():
-        layers = ['InSe+lattpol']
+        layers = ['InSe+froh']
         het = make_heterostructure(layers=layers, **GRID_PARAMS)
 
         _, _, Einv = het.get_E_matrix(exclude_self_lattice=False)
@@ -72,11 +68,5 @@ def test_single_inse_mobility():
             freq_max=1.0,
         )
 
-        mobility = mobilities[0]
-        print(f"Mobility: {mobility:.6f} cm^2/Vs (expected: {EXPECTED_MOBILITY:.6f})")
-        assert abs(mobility - EXPECTED_MOBILITY) < 0.01, \
-            f"Mobility {mobility:.6f} differs from expected {EXPECTED_MOBILITY:.6f}"
-
-
-if __name__ == "__main__":
-    test_single_inse_mobility()
+        assert abs(mobilities[0] - EXPECTED_MOBILITY) < 0.01, \
+            f"Mobility {mobilities[0]:.6f} != expected {EXPECTED_MOBILITY:.6f}"

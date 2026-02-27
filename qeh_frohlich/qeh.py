@@ -1,5 +1,4 @@
-"""
-Core framework for van der Waals heterostructure dielectric calculations.
+"""Core framework for van der Waals heterostructure dielectric calculations.
 
 This is the main computational engine for calculating dielectric functions and screening
 in layered material heterostructures. Handles monopole and dipole polarizabilities,
@@ -7,9 +6,6 @@ solves Poisson equations for induced potentials, and computes screening matrices
 
 Key classes:
 - Heterostructure: Main class for heterostructure dielectric response calculations
-  - Computes Coulomb kernels and screening matrices
-  - Handles substrate effects and interlayer interactions
-  - Solves Poisson equations for induced charge distributions
 
 Key functions:
 - make_heterostructure(): High-level interface to construct heterostructures
@@ -17,9 +13,6 @@ Key functions:
 - interpolate_building_blocks(): Grid interpolation utilities
 - get_dielectric_function(): Extracts dielectric functions from building blocks
 - get_E_matrix(): Computes screening matrix (inverse dielectric)
-
-This module implements the many-body theory for dielectric screening in 2D materials,
-supporting both isolated layers and substrate-coupled systems.
 """
 
 from __future__ import print_function
@@ -30,6 +23,11 @@ import numpy as np
 import ase.units
 from ase.utils.timing import timer, Timer
 import scipy
+
+from . import find_data_file
+from .buildingblocks import (GrapheneBB,
+                             dopedsemiconductor,
+                             phonon_polarizability)
 
 Hartree = ase.units.Hartree
 Bohr = ase.units.Bohr
@@ -67,6 +65,7 @@ default_ehmasses = {'BPx': {'emass1': [0.17, 1.12], 'hmass1': [0.15, 6.35]},
                     'H-ZrS2-NM': {'emass1': 2.881, 'hmass1': 2.2},
                     'H-ZrSe2-NM': {'emass1': 0.0, 'hmass1': 1.973},
                     'H-ZrTe2-NM': {'emass1': 0.0, 'hmass1': 1.136},
+                    'InSe': {'emass1': 0.192, 'hmass1': 0.38},
                     'T-GeO2-NM': {'emass1': 0.344, 'hmass1': 3.79},
                     'T-GeS2-NM': {'emass1': 0.689, 'hmass1': 1.289},
                     'T-HfO2-NM': {'emass1': 3.18, 'hmass1': 2.767},
@@ -96,7 +95,6 @@ default_ehmasses = {'BPx': {'emass1': [0.17, 1.12], 'hmass1': [0.15, 6.35]},
 
 default_thicknesses = {'H-MoS2-icsd-644245': 6.1511,
                        'H-TaSe2-icsd-651948': 6.375,
-                       #  'H-TaSe2-icsd-651950': 6.36,
                        'T-PdTe2-icsd-649016': 5.118,
                        'T-CrSe2-icsd-626718': 5.915,
                        'T-ZrTe2-icsd-653213': 6.66,
@@ -134,15 +132,13 @@ default_thicknesses = {'H-MoS2-icsd-644245': 6.1511,
                        'BPy': 5.26,
                        'MoSSe': 6.32,
                        'MoSSePrime': 6.32,
-                       'graphene': 3.35,  # Wiki
-                       'BN': 3.33,  # ioffe.ru/SVA/NSM/Semicond/BN/basic.html
+                       'graphene': 3.35,
+                       'BN': 3.33,
                        'GaSe': 9.3,
                        'InSe': 9.3,
                        'T-GeO2': 4.526,
                        'T-ZrO2': 4.540,
                        'T-HfO2': 3.987}
-
-# default_thicknesses = {'InSe': 9.3}
 
 DDF_THICK = 5.0
 DDF_THICK = 3.33
@@ -160,7 +156,8 @@ class Heterostructure:
 
     def __init__(self, structure, d, thicknesses=None,
                  include_dipole=True, d0=None,
-                 wmax=10, qmax=None, timer=None, substrate=None):
+                 wmax=10, qmax=None, timer=None, substrate=None,
+                 building_block_data=None):
         """Creates a Heterostructure object.
 
         structure: list of str
@@ -195,6 +192,9 @@ class Heterostructure:
                 first layer (Ang)
             isotropic: includes the out-of-plane dielectric function in
                 the substrate if True
+        building_block_data: dict or None
+            If provided, maps layer names (with -chi.npz suffix) to dicts
+            containing building block arrays. Used instead of loading from files.
         """
 
         self.timer = timer or Timer()
@@ -222,13 +222,22 @@ class Heterostructure:
 
         structure = expand_layers(structure)
 
-        if not check_building_blocks(list(set(structure))):
-            raise ValueError('Building Blocks not on the same grid')
+        if building_block_data is None:
+            if not check_building_blocks(list(set(structure))):
+                raise ValueError('Building Blocks not on the same grid')
+        else:
+            if not check_building_blocks(list(set(structure)),
+                                         building_block_data=building_block_data):
+                raise ValueError('Building Blocks not on the same grid')
+
         self.n_layers = len(structure)
         for n, name in enumerate(structure):
             if name not in namelist:
                 namelist.append(name)
-                data = np.load(name)
+                if building_block_data is not None and name in building_block_data:
+                    data = building_block_data[name]
+                else:
+                    data = np.load(find_data_file(name))
                 q = data['q_abs']
                 w = data['omega_w']
                 zi = data['z']
@@ -236,8 +245,12 @@ class Heterostructure:
                 chim = data['chiM_qw']
                 chid = data['chiD_qw']
                 # Load electronic-only chi with fallback for old files
-                chim_el = data.get('chiM_el_qw', chim)
-                chid_el = data.get('chiD_el_qw', chid)
+                if isinstance(data, dict):
+                    chim_el = data.get('chiM_el_qw', chim)
+                    chid_el = data.get('chiD_el_qw', chid)
+                else:
+                    chim_el = data['chiM_el_qw'] if 'chiM_el_qw' in data else chim
+                    chid_el = data['chiD_el_qw'] if 'chiD_el_qw' in data else chid
                 drhom = data['drhoM_qz']
                 drhod = data['drhoD_qz']
                 if qmax is not None:
@@ -445,7 +458,7 @@ class Heterostructure:
     @timer('Get induced potentials for full qpts')
     def get_induced_potentials_fullq(self):
 
-        dphi_fullq = np.zeros([self.dim, len(self.q_abs), len(self.z_big)], 
+        dphi_fullq = np.zeros([self.dim, len(self.q_abs), len(self.z_big)],
         dtype=complex)
         for idim in range(self.dim):
             dphi_fullq[idim] = self.collect_qw(self.dphi_array[idim])
@@ -537,9 +550,6 @@ class Heterostructure:
 
     @timer('Get coulomb kernel at fullq')
     def get_Coulomb_Kernel_fullq(self, step_potential=False):
-
-        # kernel_fq = np.zeros([len(self.q_abs), self.dim, self.dim],
-        # dtype=complex)
 
         kernel_myq = self.get_Coulomb_Kernel(step_potential)[:,0,0]
         kernel_fq = self.collect_q(kernel_myq)
@@ -882,14 +892,6 @@ class Heterostructure:
             k *= 2
         for iq in range(self.mynq):
             kernel_ij = self.kernel_qij[iq].copy()
-
-            # if np.isclose(self.myq_abs[iq], 0):
-            #     kernel_ij = 2 * np.pi * np.ones([self.dim, self.dim])
-
-            # if self.chi_dipole is not None:
-            #     for j in range(self.n_layers):
-            #         kernel_ij[2 * j, 2 * j + 1] = 0
-            #         kernel_ij[2 * j + 1, 2 * j] = 0
 
             for iw in range(0, len(self.frequencies)):
                 if self.substrate is not None:
@@ -1373,17 +1375,13 @@ class Heterostructure:
         """
 
         assert self.world.size == 1
-        # eps_qwij = self.get_eps_matrix()
 
         Nw = len(self.frequencies)
         Nq = self.mynq
         w_w = self.frequencies
         eig = np.zeros([Nq, Nw, self.dim], dtype=complex)
         abseps = np.zeros([Nq, Nw], dtype=complex)
-        # vec = np.zeros([Nq, Nw, self.dim, self.dim],
-        #                dtype=complex)
 
-        # import scipy as sp
         omega0 = [[] for i in range(Nq)]
 
         rho_z = [np.zeros([0, len(self.z_big)]) for i in range(Nq)]
@@ -1493,15 +1491,20 @@ class Heterostructure:
 """TOOLS"""
 
 
-def check_building_blocks(BBfiles=None):
+def check_building_blocks(BBfiles=None, building_block_data=None):
     """ Check that building blocks are on same frequency-
     and q- grid.
 
     BBfiles: list of str
         list of names of BB files
+    building_block_data: dict or None
+        If provided, maps filenames to data dicts (used instead of loading files)
     """
     name = BBfiles[0]
-    data = np.load(name)
+    if building_block_data is not None and name in building_block_data:
+        data = building_block_data[name]
+    else:
+        data = np.load(name)
     try:
         q = data['q_abs'].copy()
         w = data['omega_w'].copy()
@@ -1509,7 +1512,10 @@ def check_building_blocks(BBfiles=None):
         # Skip test for old format:
         return True
     for name in BBfiles[1:]:
-        data = np.load(name)
+        if building_block_data is not None and name in building_block_data:
+            data = building_block_data[name]
+        else:
+            data = np.load(name)
         if not ((data['q_abs'] == q).all and
                 (data['omega_w'] == w).all):
             return False
@@ -1519,7 +1525,7 @@ def check_building_blocks(BBfiles=None):
 def interpolate_building_blocks(BBfiles=None, BBmotherfile=None,
                                 q_grid=None, w_grid=None, pad=True):
     """ Interpolate building blocks to same frequency-
-    and q- grid
+    and q- grid. Returns a dict mapping layer names to data dicts.
 
     BBfiles: list of str
         list of names of BB files to be interpolated
@@ -1540,23 +1546,23 @@ def interpolate_building_blocks(BBfiles=None, BBmotherfile=None,
     if BBmotherfile is not None and '-chi.npz' not in BBmotherfile:
         BBmotherfile = BBmotherfile + '-chi.npz'
 
-    from . import find_data_file
     for il, filename in enumerate(BBfiles):
         if '-chi.npz' not in filename:
-            filename = filename + '-chi.npz'
-        BBfiles[il] = find_data_file(filename)
+            BBfiles[il] = filename + '-chi.npz'
 
     q_max = 1000
     w_max = 1000
     for name in BBfiles:
-        data = np.load(open(name, 'rb'))
+        filepath = find_data_file(name)
+        data = np.load(filepath)
         q_abs = data['q_abs']
         q_max = np.min([q_abs[-1], q_max])
         ow = data['omega_w']
         w_max = np.min([ow[-1], w_max])
 
     if BBmotherfile is not None:
-        data = np.load(BBmotherfile)
+        filepath = find_data_file(BBmotherfile)
+        data = np.load(filepath)
         q_grid = data['q_abs']
         w_grid = data['omega_w']
     else:
@@ -1572,9 +1578,11 @@ def interpolate_building_blocks(BBfiles=None, BBmotherfile=None,
         w_grid.append(w_max)
     q_grid = np.array(q_grid)
     w_grid = np.array(w_grid)
+
+    result = {}
     for name in BBfiles:
-        # assert data['isotropic_q']
-        data = np.load(name)
+        filepath = find_data_file(name)
+        data = np.load(filepath)
         q_abs = data['q_abs']
         w = data['omega_w']
         z = data['z']
@@ -1639,30 +1647,20 @@ def interpolate_building_blocks(BBfiles=None, BBmotherfile=None,
         q_abs = q_grid
         omega_w = w_grid
 
-        data = {'q_abs': q_abs,
-                'omega_w': omega_w,
-                'chiM_qw': chiM_qw,
-                'chiD_qw': chiD_qw,
-                'z': z,
-                'drhoM_qz': drhoM_qz,
-                'drhoD_qz': drhoD_qz,
-                'isotropic_q': True}
+        interp_data = {'q_abs': q_abs,
+                       'omega_w': omega_w,
+                       'chiM_qw': chiM_qw,
+                       'chiD_qw': chiD_qw,
+                       'z': z,
+                       'drhoM_qz': drhoM_qz,
+                       'drhoD_qz': drhoD_qz,
+                       'isotropic_q': True}
 
-        # Write interpolated file to current directory
-        basename = Path(name).name[:-8]  # strip '-chi.npz'
-        np.savez_compressed(basename + "_int-chi.npz",
-                            **data)
+        # Key: layer name without -chi.npz suffix, with _int appended, plus -chi.npz
+        base = name[:-8]  # strip -chi.npz
+        result[base + '_int-chi.npz'] = interp_data
 
-
-def z_factor(z0, d, G, sign=1):
-    factor = -1j * sign * np.exp(1j * sign * G * z0) * \
-        (d * G * np.cos(G * d / 2.) - 2. * np.sin(G * d / 2.)) / G**2
-    return factor
-
-
-def z_factor2(z0, d, G, sign=1):
-    factor = sign * np.exp(1j * sign * G * z0) * np.sin(G * d / 2.)
-    return factor
+    return result
 
 
 def expand_layers(structure):
@@ -1679,68 +1677,6 @@ def expand_layers(structure):
         for n in range(num):
             newlist.append(name)
     return newlist
-
-
-def plot_plasmons(hs, output,
-                  plot_eigenvalues=False,
-                  plot_density=False,
-                  plot_potential=False,
-                  save_plots=None,
-                  show=True):
-    eig, z, rho_z, phi_z, omega0, abseps = output
-
-    import matplotlib.pyplot as plt
-    q_q = hs.q_abs / Bohr
-    nq = len(q_q)
-    omega_w = hs.frequencies * Hartree
-
-    plt.figure()
-    plt.title('Plasmon modes')
-    for iq in range(nq):
-        freqs = np.array(omega0[iq])
-        plt.plot([q_q[iq], ] * len(freqs), freqs, 'k.')
-        plt.ylabel(r'$\hbar\omega$ (eV)')
-        plt.xlabel(r'q (Å$^{-1}$)')
-    if save_plots is not None:
-        plt.savefig('plasmon_modes' + str(save_plots))
-
-    plt.figure()
-    plt.title('Loss Function')
-    loss_qw = np.sum(-np.imag(eig**(-1)), axis=-1)
-    plt.pcolor(q_q, omega_w, loss_qw.T, vmax=10)
-    plt.ylabel(r'$\hbar\omega$ (eV)')
-    plt.xlabel(r'q (Å$^{-1}$)')
-    plt.colorbar()
-    if save_plots is not None:
-        plt.savefig('loss' + str(save_plots))
-
-    if plot_eigenvalues:
-        plt.figure()
-        for iq in range(0, nq, nq // 10):
-            plt.plot(omega_w, eig[iq].real)
-            plt.plot(omega_w, eig[iq].imag, '--')
-        if save_plots is not None:
-            plt.savefig('Eigenvalues' + str(save_plots))
-
-    if plot_potential:
-        plt.figure()
-        plt.title('Induced potential')
-        q = nq // 5
-        pots = np.array(phi_z[q]).real
-        plt.plot(z, pots.T)
-        plt.xlabel(r'z $(\AA)$')
-        if save_plots is not None:
-            plt.savefig('Potential' + str(save_plots))
-
-    if plot_density:
-        plt.figure()
-        plt.title('Induced density')
-        q = nq // 5
-        dens = np.array(rho_z[q]).real
-        plt.plot(z, dens.T)
-        plt.xlabel(r'z $(\AA)$')
-        if save_plots is not None:
-            plt.savefig('Density' + str(save_plots))
 
 
 def make_heterostructure(layers,
@@ -1784,17 +1720,19 @@ def make_heterostructure(layers,
             else:
                 thicknesses.append(DDF_THICK)
                 print(f"use default thickness: {DDF_THICK:.1f} A")
-                # raise NotImplementedError
-                # print('define the thickness of all layers')
 
     q_q = np.linspace(*momenta)
     omega_w = np.linspace(*frequencies)
     # Interpolate the building blocks such that they are
     # represented on the same q and omega grid
     print('Interpolating building blocks to same grid')
-    interpolate_building_blocks(BBfiles=originallayers, q_grid=q_q,
-                                w_grid=omega_w,
-                                pad=False)
+    interp_data = interpolate_building_blocks(BBfiles=originallayers,
+                                              q_grid=q_q,
+                                              w_grid=omega_w,
+                                              pad=False)
+
+    # Build in-memory building block store from interpolated data
+    bb_data = dict(interp_data)
 
     # The layers now have appended an '_int'
     for il, layer in enumerate(layers):
@@ -1806,9 +1744,6 @@ def make_heterostructure(layers,
         layers[il] = layer[:ind] + '_int' + layer[ind:]
 
     # Parse args and modify building blocks accordingly
-    from .buildingblocks import (GrapheneBB,
-                                 dopedsemiconductor,
-                                 phonon_polarizability)
     for layer in set(layers):
         # Everything that comes after a '+' is a modifier
         tmp = layer.split('+')
@@ -1820,9 +1755,10 @@ def make_heterostructure(layers,
         origin = tmp[0]
         originpath = origin + '-chi.npz'
 
-        bb = np.load(originpath)
+        # Load from in-memory store
+        bb = bb_data[originpath]
 
-        ## -cz find thickness
+        ## find thickness
         for key in default_thicknesses:
             if '-icsd-' in key:
                 key2 = key.split('-icsd-')[0]
@@ -1879,7 +1815,12 @@ def make_heterostructure(layers,
                     bb = dopedsemiconductor(bb, **kwargs)
 
             if 'phonons' in modifier:
-                phonons_name = origin[:-4] + '-phonons.npz'
+                phonon_file = origin[:-4] + '-phonons.npz'
+                try:
+                    phonon_path = find_data_file(phonon_file)
+                except FileNotFoundError:
+                    continue
+
                 subargs = modifier.split(',')
                 overwrite_masses = {}
                 eta = 0.1e-3
@@ -1892,11 +1833,7 @@ def make_heterostructure(layers,
                         else:
                             overwrite_masses[key] = float(value)
 
-                try:
-                    phonons_path = find_data_file(phonons_name)
-                except FileNotFoundError:
-                    continue
-                dct = np.load(phonons_path)
+                dct = np.load(str(phonon_path))
 
                 Z_avv, C_NN, masses, cell = (dct['Z_avv'],
                                              dct['C_NN'],
@@ -1907,10 +1844,10 @@ def make_heterostructure(layers,
                                            overwrite_masses=overwrite_masses,
                                            gamma=eta, thickness=thickness)
 
-        # Save modified building block
+        # Store modified building block in memory
         newlayer = '{}+{}'.format(origin, '+'.join(modifiers))
         newlayerpath = newlayer + '-chi.npz'
-        np.savez_compressed(newlayerpath, **bb)
+        bb_data[newlayerpath] = dict(bb) if not isinstance(bb, dict) else bb
 
         for il, layer2 in enumerate(layers):
             if layer2 == layer:
@@ -1925,80 +1862,11 @@ def make_heterostructure(layers,
     # Print summary of structure
     print('Structure:')
     if substrate is not None:
-        print('    Substrate d = {} Å'.format(substrate['d'][0]))
+        print('    Substrate d = {} Ang'.format(substrate['d'][0]))
     for thickness, layer in zip(thicknesses, layers):
-        print('    {} d = {} Å'.format(layer, thickness))
+        print('    {} d = {} Ang'.format(layer, thickness))
     het = Heterostructure(structure=layers, d=d,
                           thicknesses=thicknesses, d0=d0,
-                          substrate=substrate)
+                          substrate=substrate,
+                          building_block_data=bb_data)
     return het
-
-
-def list_building_blocks(defpath):
-    bbs = list(defpath.glob('*.npz'))
-    columns = []
-    for bb in bbs:
-        row = ['', '', '', '', '']
-        filename = bb.name
-        if not filename.endswith('-chi.npz'):
-            continue
-        material = filename.split('-chi.npz')[0]
-        row[0] = material
-
-        for key in default_thicknesses:
-            if 'icsd' in key:
-                key2 = key.split('-icsd-')[0]
-            else:
-                key2 = key
-            if key2 == material:
-                thickness = default_thicknesses[key]
-                row[1] = f'{thickness} Å'
-                break
-        else:
-            thickness = DDF_THICK
-            row[1] = f'{thickness} Å'
-            
-        if (defpath / Path(f'{material}-phonons.npz')).is_file():
-            row[2] = 'available'
-
-        for key, val in default_ehmasses.items():
-            if key.startswith(material):
-                emass = val['emass1']
-                hmass = val['hmass1']
-                row[3] = f'{emass} me'
-                row[4] = f'{hmass} me'
-        columns.append(row)
-
-    columns.insert(0, ['Name', 'Thickness', 'phonons', 'e_mass (d)', 'h_mass'])
-    widths = [0, 0, 0, 0, 0]
-    for row in columns:
-        for ir, elem in enumerate(row):
-            widths[ir] = max([len(elem), widths[ir]])
-
-    descriptions = []
-    for row in columns:
-        description = ''
-        for elem, width in zip(row, widths):
-            description += f'{elem :<{width}} | '
-        descriptions.append(description)
-
-    header = descriptions.pop(0)
-    print(header)
-    print('-' * len(header))
-    descriptions.sort()
-
-    for description in descriptions:
-        print(description)
-
-
-def download_bb(target):
-    import tarfile
-    import urllib.request
-    targz = str(target) + '.tar.gz'
-    url = ('https://cmr.fysik.dtu.dk/_downloads/'
-           '2696247b7b1fdec0b2b5e003c2ad39fe/chi-data-v2.tar.gz')
-    urllib.request.urlretrieve(url, targz)
-    tar = tarfile.open(targz, "r:gz")
-    tar.extractall(str(target.parent))
-    tar.close()
-
