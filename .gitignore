@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Runtime intermediates from make_heterostructure
+*_int-chi.npz
+*+*-chi.npz
+
+# Generated outputs
+*.dat
+*.png
+mout/
+bbdct/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

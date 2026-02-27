@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qeh-frohlich"
+version = "0.1.0"
+description = "Frohlich electron-phonon coupling in van der Waals heterostructures"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.18",
+    "scipy>=1.4",
+    "matplotlib>=3.1",
+    "ase>=3.19",
+]
+
+[tool.setuptools.packages.find]
+include = ["qeh_frohlich*"]
+
+[tool.setuptools.package-data]
+qeh_frohlich = ["data/*.npz", "data/dynfiles/*.dyn1"]

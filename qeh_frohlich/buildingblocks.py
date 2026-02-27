@@ -1,0 +1,376 @@
+"""
+Material building blocks for polarizability calculations.
+
+This module constructs polarizability building blocks for different materials, combining
+both phononic and electronic contributions to the dielectric response. Building blocks
+are used by qeh.py to assemble heterostructure dielectric functions.
+
+Key functions:
+- phononbuildingblock(): Creates phonon building blocks from atomic data
+- dopedsemiconductor(): Adds free carrier (electronic) polarizability
+  - Implements Lindhard function (chi0) for 2D electron gas
+  - Supports anisotropic effective masses and quasi-2D screening
+  - Uses relaxation time approximation for damping
+- GrapheneBB(): Special treatment for graphene's Dirac cone band structure
+- phonon_polarizability(): Adds lattice polarizability from phonon modes
+  - Computes phonon eigenfrequencies and eigenmodes
+  - Calculates Born charge contribution to polarizability tensor
+
+Building blocks contain q-resolved polarizabilities chi(q,w) used to construct
+the heterostructure response functions.
+"""
+
+import numpy as np
+from numpy.lib.scimath import sqrt as csqrt
+import ase.units as units
+from ase.units import Bohr, Hartree
+
+
+def phononbuildingblock(atoms, Z_avv, freqs, modes):
+    # Simple function for calculating phonon building block
+    me = 1822.888
+    m_a = atoms.get_masses() * me
+
+    phbb = {'Z_avv': Z_avv,
+            'freqs': freqs,
+            'modes': modes,
+            'masses': m_a,
+            'cell': atoms.cell}
+
+    return phbb
+
+
+def dopedsemiconductor(block, effectivemass, doping, temperature, eta, direction='x', thickness=6.):
+    # Chi0 for zero temperature
+    def chi0T0(q_qwm, w_qwm, me, mup_qwm):
+        kf = np.sqrt(2 * me * mup_qwm)
+        N = kf**2 / (2 * np.pi)
+        vf = kf / me
+        z = q_qwm / (2 * kf)
+        u = w_qwm / (q_qwm * vf)
+        G = N / (me * z * (vf**2))
+        
+        # Condition 1
+        mask1 = (np.absolute(z - u.real) >= 1)
+        chi0T0_qwm = (mask1 * (-(z - u.real) / np.absolute(z - u.real)) *
+                      csqrt((z - u)**2 - 1))
+        
+        # Condition 2
+        mask2 = (np.absolute(z + u.real) >= 1)
+        chi0T0_qwm -= (mask2 * ((z + u.real) / np.absolute(z + u.real)) *
+                       csqrt((z + u)**2 - 1))
+        
+        # Condition 3
+        mask3 = (np.absolute(z - u.real) < 1)
+        chi0T0_qwm += 1j * mask3 * csqrt(1 - (z - u)**2)
+
+        # Condition 4
+        mask4 = (np.absolute(z + u.real) < 1)
+        chi0T0_qwm -= 1j * mask4 * csqrt(1 - (z + u)**2)
+
+        chi0T0_qwm += 2 * z
+        chi0T0_qwm *= G
+        return -chi0T0_qwm
+
+    # Sum Argument
+    def arg(q, w, me, T, mu, mup):
+        argument = (chi0T0(q, w, me, mup) /
+                    (4 * T * (np.cosh((mu - mup) / (2 * T)))**2))
+        return argument
+
+    # Polarizability
+    def P(q_q, w_w, me, T, mu, mupmax, N):
+        mup_m = np.linspace(10**(-5), mupmax, N)
+        q_qwm = q_q[:, None, None]
+        w_qwm = w_w[None, :, None]
+        mup_qwm = mup_m[None, None, :]
+        return np.trapz(arg(q_qwm, w_qwm, me, T, mu, mup_qwm), mup_qwm, axis=2)
+
+    # Polarizability in the relaxation time approximation
+    def Pgamma(qgrid_q, w_w, direction, me=None, efermi=None, T=0.0,
+               mupmax=None, N=1000, gamma=1e-4):
+        assert efermi is not None, print('You have to set a fermi energy!')
+        assert me is not None, \
+            print('You have to set an effective electron mass!')
+
+        if isinstance(me, list) and len(me) > 1: # Anisotropic 
+            if direction == 'x':
+                theta = 0
+            elif direction == 'y':
+                theta = 90
+            else:
+                theta = direction
+
+            theta_minmax = [0, 90]
+            m = [(me[1] / me[0])**(1 / 4), (me[0] / me[1])**(1 / 4)]
+            mnew = np.interp(theta, theta_minmax, m)
+            q_q = mnew * qgrid_q
+            me = np.sqrt(me[0] * me[1])
+        else:
+            q_q = qgrid_q
+
+        gamma = gamma / Hartree
+        efermi = efermi / Hartree
+        T = T / Hartree
+        a = 1j * gamma / w_w
+        iw_w = w_w + 1j * gamma
+
+        if T / efermi > 1e-7:
+            # Temperature dependent chemical potential
+            mu = T * np.log(np.exp(efermi / T) - 1)
+            if mupmax is None:
+                mupmax = 20 * T + mu * (mu > 0)
+            P0 = P(q_q, np.array([0j]), me, T, mu, mupmax, N)
+            P1 = P(q_q, iw_w, me, T, mu, mupmax, N)
+        else:
+            mu = efermi
+            T = 0
+            P0 = chi0T0(q_q[:, None], np.array([0j])[None, :], me, mu)
+            P1 = chi0T0(q_q[:, None], iw_w[None, :], me, mu)
+
+        ## -cz here we test no-damping case
+        if gamma < 0.0:
+            return P0
+        else:
+            return ((1 + a) * P1 / (1 + a * P1 / P0))
+
+    # Reading old file
+    chiM_qw = block['chiM_qw']
+    qgrid_q = block['q_abs']
+    omega_w = block['omega_w']
+
+    # V_q = 2 * np.pi / qgrid_q
+    ## q2d kernal:
+    _th = thickness / Bohr 
+    _qdp2 = qgrid_q*_th/2.0
+    V_q = 2*np.pi/qgrid_q/_qdp2 * (1. - 
+        1./_qdp2*np.exp(-_qdp2)*np.sinh(_qdp2))
+    chi0Mnew_qw = Pgamma(qgrid_q, omega_w, me=effectivemass,
+                         efermi=doping, T=temperature, 
+                         gamma=eta, direction=direction)
+    chi0Mnew_qw += chiM_qw / (1 + V_q[:, None] * chiM_qw) 
+    dopedchiM_qw = chi0Mnew_qw / (1 - chi0Mnew_qw * V_q[:, None])
+
+    data = {'isotropic_q': True,
+            'q_abs': qgrid_q,
+            'omega_w': omega_w,
+            'chiM_qw': dopedchiM_qw,
+            'chiD_qw': block['chiD_qw'],
+            'z': block['z'],
+            'drhoM_qz': block['drhoM_qz'],
+            'drhoD_qz': block['drhoD_qz']}
+
+    return data
+
+
+def GrapheneBB(block, doping, eta):
+    Ef = doping / Hartree
+    c = 137.0
+    vf = c / 300
+    kf = Ef / vf
+    tau = 1 / (eta / Hartree)
+
+    # Auxiliary functions
+    def F(x):
+        return x * ((x**2 - 1)**0.5) - np.arccosh(x)
+
+    def C(x):
+        return x * ((1 - x**2)**0.5) - np.arccos(x)
+
+    prefactor = vf**(-2)
+
+    # Real part of the Polarizability
+    def P(q_q, w_w):
+        q_qw = q_q[:, None]
+        w_qw = w_w[None, :]
+        a = -2 * vf * kf / np.pi
+        b = 1 / (4 * np.pi) * \
+            (vf * q_qw)**2 / (w_qw**2 - (vf * q_qw)**2)**0.5
+        b1 = 1 / (4 * np.pi) * \
+            (vf * q_qw)**2 / ((vf * q_qw)**2 - w_qw**2)**0.5
+        F1 = F((2 * vf * kf + w_qw) / (vf * q_qw))
+        F2 = F((w_qw - 2 * vf * kf) / (vf * q_qw))
+        F3 = F((2 * vf * kf - w_qw) / (vf * q_qw))
+        C1 = C((2 * vf * kf + w_qw) / (vf * q_qw))
+        C2 = C((2 * vf * kf - w_qw) / (vf * q_qw))
+
+        Pol_qw = np.zeros((len(q_q), len(w_w)), complex)
+        Pol_qw[:, :] = a
+
+        # Region I
+        mask1 = (np.real(w_qw) >= vf * q_qw) * \
+                (vf * q_qw + np.real(w_qw) <= 2 * vf * kf)
+        Pol_qw += mask1 * b * (F1 - F3)
+
+        # Region II
+        mask2 = (np.real(w_qw) >= vf * q_qw) * \
+                (vf * q_qw + np.real(w_qw) >= 2 * vf * kf) * \
+                (np.real(w_qw) - vf * q_qw <= 2 * vf * kf)
+        Pol_qw += mask2 * b * (F1 + 1j * C2)
+
+        # Region III
+        mask3 = np.real(w_qw) - vf * q_qw >= 2 * vf * kf
+        Pol_qw += mask3 * b * (F1 - F2 - 1j) * np.pi
+
+        # Region IV
+        mask4 = (vf * q_qw >= np.real(w_qw)) * \
+                (vf * q_qw + np.real(w_qw) <= 2 * vf * kf)
+        Pol_qw += mask4 * 1j * b1 * (F3 - F1)
+
+        # Region V
+        mask5 = (vf * q_qw >= np.real(w_qw)) * \
+                (vf * q_qw + np.real(w_qw) >= 2 * vf * kf) * \
+                (vf * q_qw - 2 * vf * kf <= np.real(w_qw))
+        Pol_qw += mask5 * b1 * (C2 - 1j * F1)
+
+        # Region VI
+        mask6 = vf * q_qw - 2 * vf * kf >= np.real(w_qw)
+        Pol_qw += mask6 * b1 * (C1 + C2)
+
+        Pol_qw *= prefactor
+
+        assert np.allclose(mask1 + mask2 + mask3 + mask4 + mask5 + mask6,
+                           1)
+        return Pol_qw
+
+    # Relaxation time approximation for the Polarizability
+    def Pgamma(q_q, w_w):
+        a = 1j * w_w * tau
+        iw_w = w_w + 1j / tau
+        P0 = P(q_q, np.array([0j]))
+        P1 = P(q_q, iw_w)
+        return ((1 - a) * P0 * P1 / (P1 - a * P0))
+
+    z = block['z']
+    q_q = block['q_abs']
+    omega_w = block['omega_w']
+    nw = len(omega_w)
+    nq = len(q_q)
+    chi0M_qw = np.zeros([nq, nw], dtype=complex)
+    chiM_qw = np.zeros([nq, nw], dtype=complex)
+
+    # for iq, q in enumerate(q_q):
+    #     print(iq, len(q_q))
+    #     for iw, w in enumerate(omega_w):
+    V_q = 2 * np.pi / q_q
+    chi0M_qw = Pgamma(q_q, omega_w) + (-1.3 / Bohr) * q_q[:, None]**2
+    chiM_qw = chi0M_qw / (1 - chi0M_qw * V_q[:, None])
+
+    # Renormalize monopole density
+    drhoM_qz = block['drhoM_qz']
+
+    data = {'isotropic_q': True,
+            'q_abs': q_q,
+            'omega_w': omega_w,
+            'chiM_qw': chiM_qw,
+            'chiD_qw': block['chiD_qw'],
+            'z': z,
+            'drhoM_qz': drhoM_qz,
+            'drhoD_qz': block['drhoD_qz']}
+
+    return data
+
+
+def get_phonon_pol(omega_w, Z_avv, freqs, modes, m_a, cell_cv, eta=0.1e-3):
+    # Get phonons at q=0
+    Z_vx = Z_avv.swapaxes(0, 1).reshape((3, -1))
+    f2_w, D_xw = freqs**2, modes
+
+    alpha_wvv = np.zeros((len(omega_w), 3, 3), dtype=complex)
+    m_x = np.repeat(m_a, 3)**0.5
+    eta = eta / Hartree
+    for f2, D_x in zip(f2_w, D_xw.T):
+        if f2 < (1e-3 / Hartree)**2:
+            continue
+        DM_x = D_x / m_x
+        Z_v = np.dot(Z_vx, DM_x)
+
+        alpha_wvv += (np.outer(Z_v, Z_v)[np.newaxis] /
+                      ((f2 - omega_w**2) -
+                       1j * eta * omega_w)[:, np.newaxis, np.newaxis])
+
+    vol = abs(np.linalg.det(cell_cv))
+    alpha_wvv *= 1 / vol
+
+    return alpha_wvv
+
+
+def phonon_polarizability(bb, Z_avv, m_a, C_NN, cell_cv,
+                          overwrite_masses, gamma=0.1e-3, thickness=3.33):
+    Hartree = units.Hartree
+    amuoverme = units._amu / units._me
+
+    for key, value in overwrite_masses.items():
+        id = int(key.split('_')[-1])
+        m_a[id] = value
+
+    # Calculate eigenfrequencies
+    Minv_NN = np.diag(np.repeat(1 / m_a, 3)**0.5)
+    D_NN = np.dot(Minv_NN, np.dot(C_NN, Minv_NN))
+    freq2_w, D_xw = np.linalg.eigh(D_NN, UPLO='U')
+    s = units._hbar * 1e10 / np.sqrt(units._e * units._amu)
+    freq_w = np.sqrt(freq2_w.astype(complex)) * s
+
+    # Make new bb
+    bb = dict(bb)
+    chiM_qw = bb['chiM_qw']
+    chiD_qw = bb['chiD_qw']
+    q_abs = bb['q_abs']
+    omega_w = bb['omega_w']
+
+    # Get phonons at q=0
+    Z_vx = Z_avv.swapaxes(0, 1).reshape((3, -1))
+    f2_w = (freq_w / Hartree)**2
+
+    alpha_wvv = np.zeros((len(omega_w), 3, 3), dtype=complex)
+    m_x = np.repeat(m_a * amuoverme, 3)**0.5 
+    gamma = gamma / Hartree
+    for f2, D_x in zip(f2_w, D_xw.T):
+        if f2 < (1e-3 / Hartree)**2:
+            continue
+        DM_x = D_x / m_x
+        Z_v = np.dot(Z_vx, DM_x)
+
+        alpha_wvv += (np.outer(Z_v, Z_v)[np.newaxis] /
+                      ((f2 - omega_w**2) -
+                       1j * gamma * omega_w)[:, np.newaxis, np.newaxis])
+
+    vol = abs(np.linalg.det(cell_cv)) / units.Bohr**3
+    L = np.abs(cell_cv[2, 2] / Bohr)
+    alpha_wvv *= 1 / vol * L
+
+    ### -cz ideal 2D 
+    # Vm_qw = 2 * np.pi / q_abs[:, None]
+    ### quasi-2D
+    _th = thickness / Bohr
+    _qdp2 = q_abs[:, None]*_th/2.0
+    Vm_qw = 2*np.pi/q_abs[:, None]/_qdp2 * (1. -
+        1./_qdp2*np.exp(-_qdp2)*np.sinh(_qdp2))
+    Vd_qw = 2 * np.pi
+    newbb = dict(bb)
+
+    # Store electronic-only chi before adding phonon contributions
+    chiM_el_qw = chiM_qw.copy()
+    chiD_el_qw = chiD_qw.copy()
+
+    chi0Mnew_qw = -(q_abs[:, None])**2 * alpha_wvv[:, 0, 0][np.newaxis]
+    chi0Dnew_qw = -(np.ones(len(q_abs))[:, None] *
+                    alpha_wvv[:, 2, 2][np.newaxis])
+    chi0Mnew_qw += chiM_qw / (1 + Vm_qw * chiM_qw)
+    chi0Dnew_qw += chiD_qw / (1 + Vd_qw * chiD_qw)
+    chiMnew_qw = chi0Mnew_qw / (1 - Vm_qw * chi0Mnew_qw)
+    chiDnew_qw = chi0Dnew_qw / (1 - Vd_qw * chi0Dnew_qw)
+    rhoMnew_qz = bb['drhoM_qz']
+    rhoDnew_qz = bb['drhoD_qz']
+
+    newbb['chiM_qw'] = chiMnew_qw
+    newbb['chiD_qw'] = chiDnew_qw
+    newbb['chiM_el_qw'] = chiM_el_qw  # Electronic-only (before phonon addition)
+    newbb['chiD_el_qw'] = chiD_el_qw  # Electronic-only (before phonon addition)
+    newbb['omega_w'] = omega_w
+    newbb['q_abs'] = q_abs
+    newbb['drhoM_qz'] = rhoMnew_qz
+    newbb['drhoD_qz'] = rhoDnew_qz
+    newbb['isotropic_q'] = True
+
+    return newbb
