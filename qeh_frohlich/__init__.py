@@ -159,10 +159,8 @@ class FrohlichHeterostructure:
 
         f2q = self.bbset.bbdct['f2q']
         frequencies = np.sqrt(np.abs(f2q)) * Hartree * 1000
-        qlen_ang = self.qlen / unit2.Bohr2A
-
-        self.dispersion = {'qlen': qlen_ang, 'frequencies': frequencies}
-        return frequencies, qlen_ang
+        self.dispersion = {'qlen': self.qlen, 'frequencies': frequencies}
+        return frequencies, self.qlen
 
     def get_frohlich_potential(self):
         """Compute Frohlich coupling potentials V(q, nu).
@@ -189,7 +187,7 @@ class FrohlichHeterostructure:
         frequencies = np.sqrt(np.abs(f2q)) * Hartree * 1000
 
         self.frohlich = {
-            'qlen': self.qlen / unit2.Bohr2A,
+            'qlen': self.qlen,
             'potentials': potentials,
             'frequencies': frequencies,
         }
