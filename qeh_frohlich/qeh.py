@@ -1683,7 +1683,8 @@ def make_heterostructure(layers,
                          frequencies=[0.001, 5.0, 5000],
                          momenta=[0.0001, 5.0, 2000],
                          thicknesses=None,
-                         substrate=None):
+                         substrate=None,
+                         d=None):
     """Easy function for making a heterostructure based on some layers"""
 
     # Copy for internal handling
@@ -1856,7 +1857,10 @@ def make_heterostructure(layers,
     thicknesses = np.array(thicknesses)
 
     # Calculate distance between layers
-    d = (thicknesses[1:] + thicknesses[:-1]) / 2
+    if d is None:
+        d = (thicknesses[1:] + thicknesses[:-1]) / 2
+    else:
+        d = np.array(d)
     d0 = thicknesses[0]
 
     # Print summary of structure

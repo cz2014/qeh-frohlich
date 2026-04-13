@@ -185,6 +185,65 @@ class scat():
 
         return scats*self.hartree
 
+    def get_scat_mr(self, initE, fermi=None, intn=1000, useppw=True,
+                    serta=False, splayer=None, freq_min=0.01, freq_max=None):
+        """Mode-resolved scattering rate at a single energy.
+
+        Returns shape [nmode, len(splayer)] instead of [len(splayer)].
+        """
+        if fermi is not None: self.set_fermi(fermi)
+        if splayer is None: splayer = list(range(self.nlayer))
+        Ei = initE / self.hartree
+        k0 = self.va.para_E2k(initE)
+
+        const = 4*np.pi*self.effmass/self.abz
+
+        costh = np.cos(np.linspace(0, np.pi, intn))
+        if serta: costh[:] = 0.0
+        dtheta = np.pi/intn
+        scatt = np.zeros((self.nmode, len(splayer)))
+        for im in range(self.nmode):
+            if useppw:
+                dk = 2*self.va.para_E2k(initE)
+                w = self.fwq[np.argmin(np.abs(self.qlen-dk)), im]
+            else:
+                w = self.fwq[0, im]
+            w_ev = w * self.hartree
+            if w_ev < freq_min or (freq_max is not None and w_ev > freq_max): continue
+
+            fn1 = self.dis1(Ei, w)
+            fn2 = self.dis2(Ei, w)
+
+            for ii, il in enumerate(splayer):
+                gml = np.abs(self.gm[:,im,il])
+                gfun = interp1d(self.qlen, gml, bounds_error=False,
+                    fill_value=(gml[0], gml[-1]), kind='linear')
+
+                k1 = self.va.para_E2k(initE+w_ev)
+                q1 = (k0**2+k1**2-2*k0*k1*costh)**0.5
+                scatt[im, ii] += np.dot(gfun(q1)**2, 1-costh)*fn1*dtheta
+
+                if initE < w_ev: continue
+                k2 = self.va.para_E2k(initE-w_ev)
+                q2 = (k0**2+k2**2-2*k0*k2*costh)**0.5
+                scatt[im, ii] += np.dot(gfun(q2)**2, 1-costh)*fn2*dtheta
+
+        scatt = scatt*const
+        return scatt
+
+    def get_scatl_mr(self, initEl, fermi=None, intn=1000, splayer=None,
+                     freq_min=0.01, freq_max=None):
+        """Mode-resolved scattering rates over an energy list.
+
+        Returns shape [nE, nmode, len(splayer)].
+        """
+        scats = np.array([
+            self.get_scat_mr(ie, fermi, intn, splayer=splayer,
+                             freq_min=freq_min, freq_max=freq_max)
+            for ie in initEl
+        ])
+        return scats * self.hartree
+
     def get_mob(self, fermi=None, fth=0.3, eintn=1000, sintn=100, plotax=None, splayer=None, freq_min=0.01, freq_max=None):
         if fermi is not None: self.set_fermi(fermi)
 
@@ -204,7 +263,7 @@ class scat():
         if plotax:
             for i in range(len(sc[0])):
                 plotax.plot(enev, sc[:,i], label="layer: "+str(i))
-            plotax.set_ylabel("scat (1/ps)")
+            plotax.set_ylabel("scat (eV)")
             plotax.set_xlabel("E (eV)")
             plotax.plot(enev, en*pfd(en))
 
