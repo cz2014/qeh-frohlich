@@ -10,7 +10,6 @@ Demonstrates all physical quantities obtainable from the package:
 import numpy as np
 import matplotlib.pyplot as plt
 from qeh_frohlich import FrohlichHeterostructure, BBset, Hartree
-from qeh_frohlich import unit2
 
 # --- Setup: InSe encapsulated by 5 BN layers on each side ---
 layers = 5 * ['BN+froh'] + ['InSe+froh'] + 5 * ['BN+froh']
@@ -87,12 +86,11 @@ bbset_isolated.get_frohlich(
 
 froh_coupled = np.abs(calc.bbset.bbdct['froh']) * Hartree * 1000  # meV
 froh_isolated = np.abs(bbset_isolated.bbdct['froh']) * Hartree * 1000
-qlen_ang = calc.qlen / unit2.Bohr2A
 
 plt.figure()
 max_mode = np.argmax(np.max(froh_coupled[:, :, 5], axis=0))
-plt.plot(qlen_ang, froh_coupled[:, max_mode, 5], 'b-', lw=2, label='Coupled')
-plt.plot(qlen_ang, froh_isolated[:, max_mode, 5], 'r--', lw=2, label='Isolated')
+plt.plot(calc.qlen, froh_coupled[:, max_mode, 5], 'b-', lw=2, label='Coupled')
+plt.plot(calc.qlen, froh_isolated[:, max_mode, 5], 'r--', lw=2, label='Isolated')
 plt.xlabel(r'q ($\AA^{-1}$)')
 plt.ylabel('|V(q)| (meV)')
 plt.title(f'Frohlich Potential: Mode {max_mode} (InSe layer)')

@@ -53,9 +53,9 @@ calc.get_scattering_rates()        # Scattering rate vs energy
 calc.get_mobility()                # Carrier mobility
 
 # Access results as attributes
-calc.dispersion    # {'qlen': array, 'frequencies': array}
-calc.frohlich      # {'qlen': array, 'potentials': array, 'frequencies': array}
-calc.scattering    # {'energy': array, 'rates': array}
+calc.dispersion    # {'qlen': array (Angstrom^-1), 'frequencies': array (meV)}
+calc.frohlich      # {'qlen': array (Angstrom^-1), 'potentials': array (meV), 'frequencies': array (meV)}
+calc.scattering    # {'energy': array (eV), 'rates': array (1/ps)}
 calc.mobility      # list of floats (cm^2/Vs)
 calc.het           # QEH Heterostructure object (for advanced use)
 ```
